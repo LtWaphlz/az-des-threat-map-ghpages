@@ -1,7 +1,7 @@
 html, body, #app, #map { height: 100%; width: 100%; margin: 0; padding: 0; background: #0b0f14; }
 #app { position: relative; }
-#map { position: absolute; inset: 0; }
-#overlay { position: absolute; inset: 0; pointer-events: none; }
+#map { position: absolute; inset: 0; z-index: 1; }
+#overlay { position: absolute; inset: 0; pointer-events: none; z-index: 2; }
 
 #hud {
   position: absolute;
