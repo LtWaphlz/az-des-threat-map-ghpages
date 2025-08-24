@@ -198,10 +198,23 @@ function drawGlow(dstLat, dstLng, rPx, alpha=0.65) {
 let startMs = performance.now();
 function frame() {
   requestAnimationFrame(frame);
+
+  // Clear the canvas
+  ctx.fillStyle = BACKDROP_COLOR;
   ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  // === DEBUG TEST DOT at Phoenix ===
+  const [x, y] = project(33.4484, -112.0740);
+  ctx.fillStyle = 'rgba(255, 255, 0, 0.9)'; // bright yellow
+  ctx.beginPath();
+  ctx.arc(x, y, 6 * dpr, 0, Math.PI * 2);
+  ctx.fill();
+  // === END TEST DOT ===
+
+  // Time progression for looping animation
   const elapsed = (performance.now() - startMs) / 1000;
   const loopT = elapsed % LOOP_SECONDS;
-
+   
   const active = [];
   for (const ev of events) {
     const norm = normalize(ev.ts);
@@ -237,35 +250,47 @@ async function init() {
   map = new maplibregl.Map({
     container: 'map',
     style: styleUrl,
-    center: [-20, 20],
-    zoom: 1.5
+    center: [-112.0740, 33.4484], // Phoenix
+    zoom: 2.2,
+    attributionControl: true
   });
 
-  canvas = document.getElementById('overlay');
-  ctx = canvas.getContext('2d');
-  rescale();
+  map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'top-right');
 
-  await loadData();
+  // Wait for style & transforms to be ready before projecting anything
+  map.on('load', async () => {
+    canvas = document.getElementById('overlay');
+    ctx = canvas.getContext('2d');
+    rescale();
 
-  // === TEST BLOCK ===
-  if (!events.length) {
-    setStatus('Test mode: injecting 1 arc');
-    const test = {
-      src: [52.52, 13.405],         // Berlin
-      dst: [33.4484, -112.0740],    // Phoenix
-      ts: new Date().toISOString(),
-      tms: Date.now(),
-      intensity: 85,
-      colorT: Math.min(1, Math.max(0, (85 - 45) / 55)),
-      path: greatCirclePoints([52.52, 13.405],[33.4484,-112.0740],80)
-    };
-    events = [test];
-  } else {
-    setStatus(`Loaded ${events.length} events`);
-  }
+    setStatus('Loading data…');
+    await loadData();
+    precomputePaths();
 
-  map.on('resize', rescale);
-  requestAnimationFrame(frame);
+    if (!events.length) {
+      // TEST: inject a single arc so we can see something even if data failed
+      setStatus('Test mode: injecting 1 arc');
+      const test = {
+        src: [52.52, 13.405],         // Berlin
+        dst: [33.4484, -112.0740],    // Phoenix
+        ts: new Date().toISOString(),
+        tms: Date.now(),
+        intensity: 85,
+        colorT: Math.min(1, Math.max(0, (85 - 45) / 55)),
+        path: greatCirclePoints([52.52, 13.405], [33.4484, -112.0740], 80)
+      };
+      events = [test];
+    } else {
+      setStatus(`Loaded ${events.length} events`);
+    }
+
+    map.on('resize', rescale);
+    requestAnimationFrame(frame);
+  });
+
+  map.on('error', ev => {
+    setStatus(`Map error: ${ev && ev.error ? (ev.error.message || ev.error) : 'unknown'}`);
+  });
 }
 
 window.addEventListener('load', init);
