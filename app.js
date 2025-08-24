@@ -1,23 +1,24 @@
-/* AZ DES Threat Map — Animated Arcs (Phase 1)
-   - No build step, pure browser JS
-   - Uses MapLibre for basemap + a Canvas overlay for animation
-   - Supports two event schemas:
-       A) { origin_coords:[lat,lng], target_coords:[lat,lng], intensity, timestamp }
-       B) { src_lat, src_lng, dst } + resolve dst via targets.json
+/* AZ DES Threat Map — Animated Arcs (GH Pages build, robust loader)
+   - Dark basemap via window.__THREAT_MAP_STYLE__ (set in index.html)
+   - Loads data from ./data/
+   - Accepts multiple schemas:
+       A) origin_coords,target_coords
+       B) src_lat,src_lng,dst   (resolved via targets.json)
+       C) source_lat,source_lng,destination_lat,destination_lng
+       D) origin_lat,origin_lng,target_lat,target_lng
+   - If timestamps missing/invalid, generates synthetic 90d spread.
 */
 
-const LOOP_SECONDS = 60;          // total loop duration
-const ARC_TRAVEL_SECONDS = 3.2;   // time for a pulse to travel along an arc
-const ARC_FADE_SECONDS = 2.5;     // linger after arrival
-const MAX_CONCURRENT = 120;       // safety cap
+const LOOP_SECONDS = 60;
+const ARC_TRAVEL_SECONDS = 3.2;
+const ARC_FADE_SECONDS = 2.5;
+const MAX_CONCURRENT = 120;
 
-// Colors
 const COLOR_LOW = [0, 200, 120];
 const COLOR_HIGH = [255, 80, 40];
 const GLOW_COLOR = 'rgba(255,220,120,0.65)';
 const BACKDROP_COLOR = 'rgba(0,0,0,0.0)';
 
-// Canvas / state
 let canvas, ctx, map;
 let width = 0, height = 0, dpr = Math.max(1, window.devicePixelRatio || 1);
 
@@ -25,7 +26,8 @@ let events = [];
 let targets = {};
 let timeDomain = { min: null, max: null };
 
-// Utilities
+const $status = () => document.getElementById('status');
+
 function lerp(a, b, t) { return a + (b - a) * t; }
 function lerpColor(a, b, t) {
   const r = Math.round(lerp(a[0], b[0], t));
@@ -33,15 +35,16 @@ function lerpColor(a, b, t) {
   const bch = Math.round(lerp(a[2], b[2], t));
   return `rgb(${r},${g},${bch})`;
 }
-
-function parseISO(ts) { return new Date(ts).getTime(); }
-
+function parseISO(ts) {
+  const t = Date.parse(ts);
+  return isNaN(t) ? NaN : t;
+}
 function normalize(ts) {
-  // Map the timestamp across LOOP_SECONDS window so we can loop forever
   const t0 = timeDomain.min;
   const span = (timeDomain.max - timeDomain.min) || 1;
   const norm = (parseISO(ts) - t0) / span; // 0..1
-  return (norm % 1 + 1) % 1; // keep in [0,1)
+  // If parse fails, it becomes NaN, which will break drawing; guard upstream.
+  return (norm % 1 + 1) % 1;
 }
 
 function greatCirclePoints(src, dst, samples = 100) {
@@ -53,12 +56,10 @@ function greatCirclePoints(src, dst, samples = 100) {
   }
   return pts;
 }
-
 function project(lat, lng) {
   const p = map.project([lng, lat]);
   return [p.x * dpr, p.y * dpr];
 }
-
 function rescale() {
   width = map.getContainer().clientWidth;
   height = map.getContainer().clientHeight;
@@ -70,170 +71,84 @@ function rescale() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 }
 
+function coerceEvent(e, idx) {
+  // returns {src:[lat,lng], dst:[lat,lng], ts, intensity} or null
+  let src, dst;
+
+  // A) origin_coords/target_coords
+  if (Array.isArray(e.origin_coords) && Array.isArray(e.target_coords)) {
+    src = [Number(e.origin_coords[0]), Number(e.origin_coords[1])];
+    dst = [Number(e.target_coords[0]), Number(e.target_coords[1])];
+  }
+
+  // B) src_lat/src_lng/dst (lookup target city)
+  if (!src && e.src_lat != null && e.src_lng != null && e.dst) {
+    const t = targets[String(e.dst).toLowerCase()];
+    if (t) {
+      src = [Number(e.src_lat), Number(e.src_lng)];
+      dst = t;
+    }
+  }
+
+  // C) source_lat/source_lng/destination_lat/destination_lng
+  if (!src && e.source_lat != null && e.source_lng != null && e.destination_lat != null && e.destination_lng != null) {
+    src = [Number(e.source_lat), Number(e.source_lng)];
+    dst = [Number(e.destination_lat), Number(e.destination_lng)];
+  }
+
+  // D) origin_lat/origin_lng/target_lat/target_lng
+  if (!src && e.origin_lat != null && e.origin_lng != null && e.target_lat != null && e.target_lng != null) {
+    src = [Number(e.origin_lat), Number(e.origin_lng)];
+    dst = [Number(e.target_lat), Number(e.target_lng)];
+  }
+
+  if (!src || !dst || isNaN(src[0]) || isNaN(src[1]) || isNaN(dst[0]) || isNaN(dst[1])) return null;
+
+  // intensity
+  let intens = 75;
+  if (e.intensity != null && !isNaN(Number(e.intensity))) intens = Number(e.intensity);
+
+  // timestamp
+  let ts = e.timestamp;
+  let tms = parseISO(ts);
+  if (!ts || isNaN(tms)) {
+    // synthesize a timestamp across ~90 days if missing
+    const now = Date.now();
+    const ninetyDaysMs = 90 * 24 * 3600 * 1000;
+    const jitter = Math.floor((idx % 1000) / 1000 * ninetyDaysMs);
+    tms = now - ninetyDaysMs + jitter;
+    ts = new Date(tms).toISOString();
+  }
+
+  return { src, dst, ts, tms, intensity: intens };
+}
+
 async function loadData() {
-  const evRes = await fetch('../events_simulated_90d.json').catch(()=>null);
-  const tgRes = await fetch('../targets_phx_tucson_mesa.json').catch(()=>null);
+  $status() && ($status().textContent = 'Loading data…');
 
-  let ev = [];
-  if (evRes && evRes.ok) ev = await evRes.json();
+  let ev = [], tg = [];
+  try {
+    const evRes = await fetch('data/events_simulated_90d.json', { cache: 'no-cache' });
+    if (evRes.ok) ev = await evRes.json();
+  } catch (e) { console.error('Failed to load events', e); }
 
-  let tg = [];
-  if (tgRes && tgRes.ok) tg = await tgRes.json();
-  tg.forEach(t => targets[(t.city||'').toLowerCase()] = [t.lat, t.lng]);
+  try {
+    const tgRes = await fetch('data/targets_phx_tucson_mesa.json', { cache: 'no-cache' });
+    if (tgRes.ok) tg = await tgRes.json();
+  } catch (e) { console.error('Failed to load targets', e); }
 
-  // Normalize schemas; build derived fields
+  tg.forEach(t => targets[(t.city||'').toLowerCase()] = [Number(t.lat), Number(t.lng)]);
+
+  // Coerce every event
+  const coerced = ev.map(coerceEvent).filter(Boolean);
+
+  // Compute domain; if empty, warn visibly
+  if (!coerced.length) {
+    console.warn('No events parsed. Check JSON schema/fields.');
+    $status() && ($status().textContent = 'No events parsed — check data/ JSON field names.');
+    events = [];
+    return;
+  }
+
   let minTs = Infinity, maxTs = -Infinity;
-  events = ev.map((e, idx) => {
-    let src, dst, intens = (e.intensity != null ? e.intensity : 75);
-    if (e.origin_coords && e.target_coords) {
-      src = [e.origin_coords[0], e.origin_coords[1]];
-      dst = [e.target_coords[0], e.target_coords[1]];
-    } else if (e.src_lat != null && e.src_lng != null && e.dst && targets[e.dst.toLowerCase()]) {
-      src = [e.src_lat, e.src_lng];
-      dst = targets[e.dst.toLowerCase()];
-    } else {
-      return null;
-    }
-    const ts = e.timestamp || new Date().toISOString();
-    const tms = parseISO(ts);
-    minTs = Math.min(minTs, tms);
-    maxTs = Math.max(maxTs, tms);
-    return {
-      id: e.id ?? idx,
-      src, dst, ts, tms,
-      intensity: intens,
-      colorT: Math.min(1, Math.max(0, (intens - 45) / 55)), // map 45..100 -> 0..1
-      path: null // filled later
-    };
-  }).filter(Boolean);
-
-  timeDomain.min = minTs;
-  timeDomain.max = maxTs;
-}
-
-function precomputePaths() {
-  events.forEach(ev => {
-    ev.path = greatCirclePoints(ev.src, ev.dst, 80);
-  });
-}
-
-// Draw helpers
-function drawArcPath(path, color, widthPx, alpha=0.8) {
-  if (!path || path.length < 2) return;
-  ctx.globalAlpha = alpha;
-  ctx.strokeStyle = color;
-  ctx.lineWidth = widthPx * dpr;
-  ctx.beginPath();
-  const [x0, y0] = project(path[0][0], path[0][1]);
-  ctx.moveTo(x0, y0);
-  for (let i = 1; i < path.length; i++) {
-    const [x, y] = project(path[i][0], path[i][1]);
-    ctx.lineTo(x, y);
-  }
-  ctx.stroke();
-  ctx.globalAlpha = 1;
-}
-
-function drawPulse(path, t, color) {
-  if (!path || path.length < 2) return;
-  const idx = Math.min(path.length - 1, Math.floor(t * (path.length - 1)));
-  const lat = path[idx][0], lng = path[idx][1];
-  const [x, y] = project(lat, lng);
-  ctx.fillStyle = color;
-  ctx.beginPath();
-  ctx.arc(x, y, 3.5 * dpr, 0, Math.PI * 2);
-  ctx.fill();
-}
-
-function drawGlow(dstLat, dstLng, rPx, alpha=0.65) {
-  const [x, y] = project(dstLat, dstLng);
-  ctx.beginPath();
-  ctx.arc(x, y, rPx * dpr, 0, Math.PI * 2);
-  ctx.strokeStyle = GLOW_COLOR;
-  ctx.lineWidth = 2 * dpr;
-  ctx.globalAlpha = alpha;
-  ctx.stroke();
-  ctx.globalAlpha = 1;
-}
-
-// Animation loop
-let startMs = performance.now();
-function frame() {
-  requestAnimationFrame(frame);
-
-  // Clear
-  ctx.fillStyle = BACKDROP_COLOR;
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-  // Current loop time 0..LOOP_SECONDS
-  const elapsed = (performance.now() - startMs) / 1000;
-  const loopT = elapsed % LOOP_SECONDS;
-
-  // For each event, compute its phase within the loop
-  const active = [];
-  for (const ev of events) {
-    const norm = normalize(ev.ts);            // 0..1
-    const evStart = norm * LOOP_SECONDS;      // seconds
-    const evEnd = evStart + ARC_TRAVEL_SECONDS + ARC_FADE_SECONDS;
-
-    // Handle wrap-around at loop boundary
-    let t = loopT - evStart;
-    if (t < -1) continue; // early exit
-    if (t < 0) t += LOOP_SECONDS; // wrap
-
-    if (t <= ARC_TRAVEL_SECONDS + ARC_FADE_SECONDS) {
-      active.push({ ev, t });
-      if (active.length > MAX_CONCURRENT) break;
-    }
-  }
-
-  // Draw active arcs
-  for (const { ev, t } of active) {
-    const col = lerpColor(COLOR_LOW, COLOR_HIGH, ev.colorT);
-    const widthPx = 0.8 + ev.colorT * 2.2;
-
-    // Full arc base (faint)
-    drawArcPath(ev.path, col, Math.max(1, widthPx * 0.6), 0.25);
-
-    if (t <= ARC_TRAVEL_SECONDS) {
-      // Traveling pulse
-      const progress = Math.max(0, Math.min(1, t / ARC_TRAVEL_SECONDS));
-      drawPulse(ev.path, progress, col);
-    } else {
-      // Arrival glow (fade & expand)
-      const glowT = Math.min(1, (t - ARC_TRAVEL_SECONDS) / ARC_FADE_SECONDS);
-      drawGlow(ev.dst[0], ev.dst[1], 6 + 14 * glowT, 0.65 * (1 - glowT));
-    }
-
-    // Highlight top layer arc (brighter)
-    drawArcPath(ev.path, col, widthPx, 0.85);
-  }
-}
-
-// Init map + canvas
-async function init() {
-  map = new maplibregl.Map({
-    container: 'map',
-    style: 'https://demotiles.maplibre.org/style.json',
-    center: [-112.0740, 33.4484], // Phoenix
-    zoom: 2.2,
-    attributionControl: true
-  });
-
-  map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'top-right');
-
-  canvas = document.getElementById('overlay');
-  ctx = canvas.getContext('2d');
-  rescale();
-
-  await loadData();
-  precomputePaths();
-
-  map.on('move', () => { /* redraw on next frame */ });
-  map.on('resize', rescale);
-
-  // Kick it off
-  requestAnimationFrame(frame);
-}
-
-window.addEventListener('load', init);
+  coer
