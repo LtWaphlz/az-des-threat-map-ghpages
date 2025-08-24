@@ -22,6 +22,13 @@ const BACKDROP_COLOR = 'rgba(0,0,0,0.0)';
 function $(id){ return document.getElementById(id); }
 function setStatus(msg){ const el = $('status'); if (el) el.textContent = msg; }
 
+// Built‑in fallbacks so arcs draw even if targets JSON fails
+const FALLBACK_TARGETS = {
+  "phoenix": [33.4484, -112.0740],
+  "tucson":  [32.2226, -110.9747],
+  "mesa":    [33.4152, -111.8315]
+};
+
 // Canvas / state
 let canvas, ctx, map;
 let width = 0, height = 0, dpr = Math.max(1, window.devicePixelRatio || 1);
@@ -83,9 +90,10 @@ function coerceEvent(e, idx) {
     dst = [Number(e.target_coords[0]), Number(e.target_coords[1])];
   }
 
-  // B) src_lat/src_lng/dst (lookup target city)
+  // B) src_lat/src_lng/dst (lookup target city) — uses merged targets (file + fallback)
   if (!src && e.src_lat != null && e.src_lng != null && e.dst) {
-    const t = targets[String(e.dst).toLowerCase()];
+    const key = String(e.dst).toLowerCase();
+    const t = targets[key];
     if (t) {
       src = [Number(e.src_lat), Number(e.src_lng)];
       dst = t;
@@ -140,9 +148,15 @@ async function loadData() {
     if (tgRes.ok) tg = await tgRes.json();
   } catch (e) { console.error('Failed to load targets', e); }
 
-  // Build target lookup
-  targets = {};
-  tg.forEach(t => targets[(t.city || '').toLowerCase()] = [Number(t.lat), Number(t.lng)]);
+  // Build target lookup (merge file + fallback)
+  targets = { ...FALLBACK_TARGETS };
+  (tg || []).forEach(t => {
+    const key = String(t.city || '').toLowerCase();
+    if (key && !isNaN(Number(t.lat)) && !isNaN(Number(t.lng))) {
+      targets[key] = [Number(t.lat), Number(t.lng)];
+    }
+  });
+  setStatus(`Loading data… targets:${Object.keys(targets).length}`);
 
   // Coerce events
   const coerced = ev.map(coerceEvent).filter(Boolean);
