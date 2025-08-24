@@ -29,9 +29,9 @@
     }
   </script>
   <script>
-    // Initialize map before app.js runs so style is definitely dark
-    window.__THREAT_MAP_STYLE__ = 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json';
+  // Primary (dark). If your network blocks it, app.js will fall back automatically.
+  window.__THREAT_MAP_STYLE__ = 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json';
   </script>
-  <script src="app.js"></script>
+  <script src="app.js?v=4"></script>
 </body>
 </html>
