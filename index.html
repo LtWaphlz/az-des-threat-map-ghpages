@@ -1,11 +1,11 @@
-<!doctype html>
+<<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>AZ DES Threat Map — Animated Arcs (Phase 1 Demo)</title>
   <link rel="stylesheet" href="style.css" />
-  <!-- MapLibre GL JS (open-source Mapbox GL JS v1-compatible) -->
+  <!-- MapLibre GL JS -->
   <link href="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.css" rel="stylesheet" />
 </head>
 <body>
@@ -17,16 +17,20 @@
       <div class="legend">
         <span class="dot"></span> arcs = simulated “attacks” • pulse = in-flight • glow = arrival
       </div>
+      <div id="status" style="opacity:.8;margin-top:4px;"></div>
     </div>
   </div>
 
   <script src="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.js"></script>
   <script src="https://unpkg.com/d3-geo@3.1.1/dist/d3-geo.min.js"></script>
   <script>
-    // Fallback for reduced motion users
     if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
       document.body.classList.add('reduced-motion');
     }
+  </script>
+  <script>
+    // Initialize map before app.js runs so style is definitely dark
+    window.__THREAT_MAP_STYLE__ = 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json';
   </script>
   <script src="app.js"></script>
 </body>
