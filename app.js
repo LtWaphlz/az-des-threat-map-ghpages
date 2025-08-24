@@ -321,6 +321,24 @@ async function init() {
   await loadData();
   precomputePaths();
 
+     // --- TEMP TEST: inject a single arc if none loaded ---
+  if (!events.length) {
+    setStatus('Test mode: injecting 1 arc');
+    const test = {
+      src: [52.52, 13.405],         // Berlin
+      dst: [33.4484, -112.0740],    // Phoenix
+      ts: new Date().toISOString(),
+      tms: Date.now(),
+      intensity: 85,
+      colorT: Math.min(1, Math.max(0, (85 - 45) / 55)),
+      path: null
+    };
+    events = [test];
+    precomputePaths();
+  } else {
+    setStatus(`Loaded ${events.length} events`);
+  }
+
   if (!events.length) {
     setStatus('No events parsed — check data/ JSON field names.');
   } else {
